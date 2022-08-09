@@ -28,3 +28,95 @@ periodics:
             - "./scripts/ci-e2e.sh"
           securityContext:
             privileged: true
+  - name: periodic-update-boskos-resources-powervs
+    labels:
+      preset-kind-volume-mounts: "true"
+    decorate: true
+    decoration_config:
+      gcs_configuration:
+        bucket: ppc64le-kubernetes
+        path_strategy: explicit
+      gcs_credentials_secret: gcs-credentials
+    interval: 3h
+    extra_refs:
+      - base_ref: e2e-enhance
+        org: Amulyam24
+        repo: cluster-api-provider-ibmcloud
+        workdir: true
+    spec:
+      containers:
+        - image: gcr.io/k8s-staging-test-infra/kubekins-e2e:v20220121-354980456e-master
+          env:
+            - name: "BOSKOS_HOST"
+              value: "boskos.test-pods.svc.cluster.local"
+          command:
+            - runner.sh
+          args:
+            - bash
+            - -c
+            - |
+              set -o errexit
+              set -o nounset
+              set -o pipefail
+
+              RESOURCE_TYPE="powervs-service"
+              USER="BoskosUpdater"
+              RESOURCE_GROUP="prow-upstream"
+
+              # Update the resource data and release it
+              update_data_and_release(){
+                  service_instanceid=$1
+                  region=$2
+                  zone=$3
+                  url="http://${BOSKOS_HOST}/update?name=${resource_name}&state=busy&owner=${USER}"
+                  status_code=$(curl -w '%{http_code}' -X POST -d '{"service-instance-id":"'${service_instanceid}'","api-key":"","region":"'${region}'","zone":"'${zone}'","resource-group":"'${RESOURCE_GROUP}'"}' ${url})
+                  if [[ ${status_code} == 200 ]]; then
+                      url="http://${BOSKOS_HOST}/release?name=${resource_name}&dest=dirty&owner=${USER}"
+                      status_code=$(curl -w '%{http_code}' -X POST ${url})
+
+                      if [[ ${status_code} != 200 ]]; then
+                          echo "Couldn't release resource- ${status_code}"
+                          exit 1
+                      fi
+                  else
+                      echo "Couldn't update resource- ${status_code}"
+                      exit 1
+                  fi
+              }
+
+              # Acquire free resource
+              capture_free_resource(){
+                  url="http://${BOSKOS_HOST}/acquire?type=${RESOURCE_TYPE}&state=free&dest=busy&owner=${USER}"
+                  resource_name=$(curl -X POST ${url} | jq -r '.name')
+                  [ $? = 0 ] && status_code=200
+
+                  if [[ ${status_code} == 200 ]]; then
+                      case "${resource_name}" in
+                          "k8s-boskos-powervs-osa21-00") 
+                              update_data_and_release "d53da3bf-1f4a-42fa-9735-acf16b1a05cd" "osa" "osa21"
+                              ;;
+                          "k8s-boskos-powervs-osa21-01") 
+                              update_data_and_release "5acacb18-4d21-420b-8ec4-f99e3378e6f4" "osa" "osa21"
+                              ;;
+                          "k8s-boskos-powervs-tok04-00") 
+                              update_data_and_release "ce9de48c-ed22-4c0a-a380-66b0f7478d3b" "tok" "tok04"
+                              ;;
+                          "k8s-boskos-powervs-tok04-01") 
+                              update_data_and_release "de80c391-efdd-43b5-8d57-33707a0fbebd" "tok" "tok04"
+                              ;;
+                          "k8s-boskos-powervs-syd04-00") 
+                              update_data_and_release "fe0c9d42-a1d9-40b8-969e-20c7dab8f6b0" "syd" "syd04"
+                              ;;
+                      esac
+                  else
+                      echo "Couldn't acquire a free resource- ${status_code}"
+                      exit 1
+                  fi
+              }
+
+              if [ -n "${BOSKOS_HOST:-}" ]; then
+                  while true
+                  do
+                      capture_free_resource
+                  done 
+              fi              
